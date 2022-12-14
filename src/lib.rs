@@ -19,6 +19,7 @@ use varisat::CnfFormula;
 use varisat::ExtendFormula;
 use varisat::dimacs::write_dimacs;
 use varisat::{Var, Lit};
+use varisat::solver::Solver;
 
 
 
@@ -206,7 +207,7 @@ pub fn parse_cnf(cur_expr:Box<LogicNode>) ->Box<LogicNode>{
     }
 }
 
-pub fn dimacs(cnf_expr:Box<LogicNode>) -> String{
+pub fn dimacs(cnf_expr:Box<LogicNode>) -> (String, CnfFormula){
     let flat_cnf = utils::flatten_cnf(cnf_expr.clone()) ;
     let (names, config2index) = exact_config(cnf_expr.clone());
     let mut formula = CnfFormula::new();
@@ -247,16 +248,39 @@ pub fn dimacs(cnf_expr:Box<LogicNode>) -> String{
     write_dimacs(&mut implements_write, &formula).unwrap();
     let dimas_res = String::from_utf8(implements_write).unwrap();
     res.push_str(&dimas_res);
-    res
+    (res,formula)
 }
 
 /// transfer from string to dimacs
 pub fn parse_dimacs(bool_expr:&str) -> String{
     let formula = parse_formula(bool_expr).unwrap();
     let cnf_formula = parse_cnf(Box::new(formula));
-    dimacs(cnf_formula)
+    let (str,_) = dimacs(cnf_formula);
+        return str;
 }
 
+pub fn satisfiable(bool_expr:&str) ->bool{
+    let formula = parse_formula(bool_expr).unwrap();
+    let cnf_formula = parse_cnf(Box::new(formula));
+    let (_, dimacs_formula) = dimacs(cnf_formula);
+
+    let mut sol = Solver::new();
+    sol.add_formula(&dimacs_formula);
+    let solve_res = sol.solve().unwrap();
+    solve_res
+}
+
+pub fn solve(bool_expr:&str) ->Option<Vec<Lit>>{
+    let formula = parse_formula(bool_expr).unwrap();
+    let cnf_formula = parse_cnf(Box::new(formula));
+    let (_, dimacs_formula) = dimacs(cnf_formula);
+
+    let mut sol = Solver::new();
+    sol.add_formula(&dimacs_formula);
+    let solve_res = sol.solve().unwrap();
+    let model = sol.model();
+    model
+}
 
 
 #[cfg(test)]
@@ -267,7 +291,32 @@ mod tests{
         let input = "A&&(B||!(D&&E))";
         println!("raw string:{}", input);
         let p = parse_dimacs(input);
+
         println!("dimacs:\n{}", p);
+    }
+
+    #[test]
+    fn test_sat(){
+        let input = "A&&(B||!(D&&E))";
+        println!("raw string:{}", input);
+        let p = satisfiable(input);
+
+        println!("dimacs:\n{}", p);
+    }
+
+    #[test]
+    fn test_solve(){
+        let input = "A&&(B||!(D&&E))";
+        println!("raw string:{}", input);
+        let p = solve(input);
+        if p.is_some(){
+            let un_p = p.unwrap();
+            println!("{:?}", un_p);
+        }
+        else{
+            println!("can not solve");
+        }
+
     }
 
 }
