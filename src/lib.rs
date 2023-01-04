@@ -15,6 +15,9 @@ use cnfgen::boolexpr_creator::ExprCreator32;
 use cnfgen::boolexpr::BoolExprNode;
 
 use rustlogic::LogicNode;
+use rustlogic::custom_parse;
+use rustlogic::operators;
+
 use varisat::CnfFormula;
 use varisat::ExtendFormula;
 use varisat::dimacs::write_dimacs;
@@ -25,10 +28,18 @@ use varisat::solver::Solver;
 
 
 
+
 const TYPE_FILTER:&'static [&'static str] = &["bool", "tristate"];
 const ILLEGAL_CHAR:&'static [&'static str] = &["[", "]", "=", "y"];
 
 pub mod utils;
+
+pub fn default_kconfig_operators() -> operators::OperatorSet{
+    operators::common_sets::default()
+        .adjust_and("&&")
+        .adjust_or("||")
+        .adjust_not("!")
+}
 
 //exact and sort
 pub fn exact_config(expr:Box<LogicNode>) -> (Vec<String>, HashMap<String, usize>){
@@ -85,23 +96,18 @@ pub fn create_variables(n:usize) -> (Rc<RefCell<ExprCreator32>>,Vec<BoolExprNode
 }
 
 pub fn parse_formula(bool_expr:&str) ->Option<rustlogic::LogicNode>{
-    info!("raw expr:{bool_expr}");
+    trace!("raw expr:{bool_expr}");
 
     if bool_expr.is_empty(){
-        info!("empty string");
+        info!("received empty string to parse");
         return None;
     }
 
-    for ch in ILLEGAL_CHAR{
-        if bool_expr.contains(ch){
-            info!("unsupported string:{}, contains {}", bool_expr, ch);
-            return None;
-        }
-    }
-
-
-    // make it compatible to the rustlogic library
+    // wrap all the variables with variable boundaries
     let re = Regex::new("[a-zA-Z_0-9]+").unwrap();
+
+    // make the operator compatible
+
     let s = bool_expr.to_owned()
         .replace("&&", "&")
         .replace("||","|")
@@ -110,7 +116,7 @@ pub fn parse_formula(bool_expr:&str) ->Option<rustlogic::LogicNode>{
 
     let result = re.replace_all(&s, |caps: &Captures| {
         format!("[{}]", &caps[0])});
-    error!("result:::{result}");
+    trace!("after wrap variable boundaries:{}", result.clone());
 
     let res = rustlogic::parse(&result);
     match res{
@@ -125,8 +131,6 @@ pub fn parse_formula(bool_expr:&str) ->Option<rustlogic::LogicNode>{
             return Some(res);
         }
     };
-
-
 }
 
 pub fn parse_cnf(cur_expr:Box<LogicNode>) ->Box<LogicNode>{
@@ -134,8 +138,12 @@ pub fn parse_cnf(cur_expr:Box<LogicNode>) ->Box<LogicNode>{
     match *(cur_expr.clone()) {
         LogicNode::Or(left_node, rigt_node) =>{
             // Or(Variable("B"), And(Variable("D"), Variable("E")))
+            // B || (D && E)
+            // "A&&(B||!(D&&E))"
             let left_cnf = parse_cnf(left_node);
+            //B
             let rigt_cnf = parse_cnf(rigt_node);
+            //D && E
 
             let flatten_left = utils::flatten_cnf(left_cnf); 
             let flatten_rigt = utils::flatten_cnf(rigt_cnf);
@@ -146,13 +154,13 @@ pub fn parse_cnf(cur_expr:Box<LogicNode>) ->Box<LogicNode>{
                     res_vec.push(LogicNode::Or(left_item.to_owned(),rigt_item.to_owned()));
                 }
             }
+            // [{BD, BE, BF, BG}]
             
+            // A || (B&&C)
             //println!("{:?}", res_vec);
             let init = res_vec[0].clone();
-            //println!("{:?}", init);
             let res = res_vec.iter().skip(1).
                 fold(init, |acc:LogicNode, x:&LogicNode|->LogicNode{LogicNode::And(Box::new(acc), Box::new(x.clone()))});
-                // reduce(|acc, x|-> LogicNode{LogicNode::And(&Box::new(acc), x.clone())});
             //println!("{:?}", res);
             return Box::new(res);
         },
@@ -210,9 +218,15 @@ pub fn parse_cnf(cur_expr:Box<LogicNode>) ->Box<LogicNode>{
 pub fn dimacs(cnf_expr:Box<LogicNode>) -> (String, CnfFormula){
     let flat_cnf = utils::flatten_cnf(cnf_expr.clone()) ;
     let (names, config2index) = exact_config(cnf_expr.clone());
+
     let mut formula = CnfFormula::new();
     for clause in flat_cnf{
         // one clause
+        // A V D V !E ..
+        // (BVE) && (CVF)
+        //
+        // (BVE) [B,E]
+        // (CVF) [C,F]
         let flat_dnf = utils::flatten_dnf(clause);
         let mut clause:Vec<varisat::Lit> = vec![];     
         for node in flat_dnf{
@@ -238,6 +252,7 @@ pub fn dimacs(cnf_expr:Box<LogicNode>) -> (String, CnfFormula){
         formula.add_clause(clause.as_slice());
         //println!("current clause: {:?}", clause);
     }
+
     let mut res = String::new();
     // write the comment
     for (i,name) in names.iter().enumerate() {
@@ -256,7 +271,7 @@ pub fn parse_dimacs(bool_expr:&str) -> String{
     let formula = parse_formula(bool_expr).unwrap();
     let cnf_formula = parse_cnf(Box::new(formula));
     let (str,_) = dimacs(cnf_formula);
-        return str;
+    return str;
 }
 
 pub fn satisfiable(bool_expr:&str) ->bool{
@@ -288,35 +303,47 @@ mod tests{
     use super::*;
     #[test]
     fn test_parse(){
-        let input = "A&&(B||!(D&&E))";
-        println!("raw string:{}", input);
-        let p = parse_dimacs(input);
+         let input = "A&&(B||!(D&&E)) && !B";
+        
+         println!("raw string:{}", input);
 
-        println!("dimacs:\n{}", p);
+         let p = solve(input);
+         if p.is_some(){
+             let un_p = p.unwrap();
+             println!("{:?}", un_p);
+         }
+         else{
+             println!("can not solve");
+         }
+         // let p = parse_dimacs(input);
+
+         // println!("dimacs:\n{}", p);
+         // let p = satisfiable(input);
+
+         // println!("if satisfiable:\n{}", p);
+
     }
 
     #[test]
     fn test_sat(){
-        let input = "A&&(B||!(D&&E))";
-        println!("raw string:{}", input);
-        let p = satisfiable(input);
+        // let input = "A&&(!A || E)";
+        // println!("raw string:{}", input);
+        // let p = satisfiable(input);
 
-        println!("dimacs:\n{}", p);
+        // println!("dimacs:\n{}", p);
     }
 
     #[test]
     fn test_solve(){
-        let input = "A&&(B||!(D&&E))";
-        println!("raw string:{}", input);
-        let p = solve(input);
-        if p.is_some(){
-            let un_p = p.unwrap();
-            println!("{:?}", un_p);
-        }
-        else{
-            println!("can not solve");
-        }
-
+        // let input = "A&&(B||!(D&&E))";
+        // let input = "A&&(!A)";
+        // println!("raw string:{}", input);
     }
 
+    #[test]
+    fn test_operator(){
+        let input = "A&&(B)||C";
+        let p = parse_formula(input);
+        println!("{}", p.unwrap());
+    }
 }
