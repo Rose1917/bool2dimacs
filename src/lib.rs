@@ -121,13 +121,13 @@ pub fn parse_formula(bool_expr:&str) ->Option<rustlogic::LogicNode>{
     let res = rustlogic::parse(&result);
     match res{
         Err(e) =>{
-            error!("parsing the bool expression {bool_expr} failed");
-            error!("{e}");
+            // error!("parsing the bool expression {bool_expr} failed");
+            // error!("{e}");
             return None;
             //
         },
         Ok(res) =>{
-            error!("parsing the bool expression {bool_expr} success");
+            // error!("parsing the bool expression {bool_expr} success");
             return Some(res);
         }
     };
@@ -215,6 +215,45 @@ pub fn parse_cnf(cur_expr:Box<LogicNode>) ->Box<LogicNode>{
     }
 }
 
+pub fn dimacs_with_index(cnf_expr:Box<LogicNode>, config2index:&HashMap<String,usize>) -> CnfFormula{
+    let flat_cnf = utils::flatten_cnf(cnf_expr.clone()) ;
+
+    let mut formula = CnfFormula::new();
+    for clause in flat_cnf{
+        // one clause
+        // A V D V !E ..
+        // (BVE) && (CVF)
+        //
+        // (BVE) [B,E]
+        // (CVF) [C,F]
+        let flat_dnf = utils::flatten_dnf(clause);
+        let mut clause:Vec<varisat::Lit> = vec![];     
+        for node in flat_dnf{
+            match *node{
+                LogicNode::Variable(v) =>{
+                    //println!("variable {}", v);
+                    clause.push(varisat::Lit::from_dimacs((config2index[&v]+1) as isize));            
+                },
+                LogicNode::Not(not_node) =>{
+                    match *not_node {
+                        LogicNode::Variable(not_s) => {
+                           //println!("not variable {}", not_s); 
+                           clause.push(varisat::Lit::from_dimacs(-((config2index[&not_s]+1) as isize)));            
+                        },
+                        _ => unreachable!()
+                    }
+                },
+
+                _ => unreachable!()
+            }
+        }
+
+        formula.add_clause(clause.as_slice());
+        //println!("current clause: {:?}", clause);
+    }
+    formula
+}
+
 pub fn dimacs(cnf_expr:Box<LogicNode>) -> (String, CnfFormula){
     let flat_cnf = utils::flatten_cnf(cnf_expr.clone()) ;
     let (names, config2index) = exact_config(cnf_expr.clone());
@@ -288,6 +327,7 @@ pub fn satisfiable(bool_expr:&str) ->bool{
 pub fn solve(bool_expr:&str) ->Option<Vec<Lit>>{
     let formula = parse_formula(bool_expr).unwrap();
     let cnf_formula = parse_cnf(Box::new(formula));
+    println!("::::{:?}", cnf_formula);
     let (_, dimacs_formula) = dimacs(cnf_formula);
 
     let mut sol = Solver::new();
@@ -303,7 +343,7 @@ mod tests{
     use super::*;
     #[test]
     fn test_parse(){
-         let input = "A&&(B||!(D&&E)) && !B";
+         let input = "!A||(B&&C)";
         
          println!("raw string:{}", input);
 
